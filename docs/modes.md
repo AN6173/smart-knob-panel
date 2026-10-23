@@ -1,33 +1,42 @@
 # Haptic Modes
 
-Initial set of modes to implement. All parameters should be runtime-configurable where possible.
+Parameters are runtime-adjustable where noted. Implementation: [`main/haptic/haptic_mode.c`](../main/haptic/haptic_mode.c).
 
-## 1. Free / Smooth
-- Near-zero torque
-- Used for continuous fine adjustment
+## 1. Free / Smooth (`mode free`)
 
-## 2. Detent
-- Fixed number of positions (configurable, e.g. 8 / 12 / 24)
-- Adjustable detent strength and snap point
+- Near-zero torque + light damping
+- Continuous fine adjustment
+
+## 2. Detent (`mode detent`)
+
+- Fixed positions per revolution (default **12**, change with `detent N`)
+- Strength / snap defaults in firmware; tune in `haptic_set_mode`
 - Typical use: mode selector, multi-level scenes
 
-## 3. Switch
-- Strong restoring torque toward 0° or 180°
+## 3. Switch (`mode switch`)
+
+- Strong restoring torque toward **0° or 180°**
 - Feels like a mechanical toggle
 - Typical use: light on/off
 
-## 4. Dimmer
-- Either fine detents or smooth with soft endstops
-- Angle mapped to 0–100%
-- Typical use: light brightness, volume
+## 4. Dimmer (`mode dimmer`) — stub feel
 
-## 5. Curtain
-- Continuous or coarse detents
-- Hard or soft endstops at fully open / fully closed
-- Typical use: curtain / blind control
+- Soft endstops over a limited travel; `value_norm` maps toward 0–100%
+- Strengths are placeholders — refine after Free/Detent are good
+- Typical use: brightness, volume
 
-## Implementation Notes
+## 5. Curtain (`mode curtain`) — stub feel
 
-- Reference the detent / endstop math from the original SmartKnob firmware.
-- Use torque mode of `esp_simplefoc`.
-- Mode change can initially be triggered by BOOT button or serial command.
+- Continuous travel with stronger endstops
+- Typical use: curtain / blind open–close
+
+## Control path
+
+Haptic modes run under `ctrl haptic` (torque mode). Bring-up paths:
+
+- `ctrl openloop` — no encoder closed loop
+- `ctrl sensor` — encoder only
+- `ctrl angle` — position hold
+- `ctrl haptic` — torque from haptic engine
+
+Mode change: serial console (`mode …`). BOOT button switching can be added later.

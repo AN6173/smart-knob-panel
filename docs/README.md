@@ -1,13 +1,9 @@
 # Documentation
 
-This directory holds design notes, hardware details, mode descriptions, and development guides.
+| Doc | Content |
+|-----|---------|
+| [hardware.md](hardware.md) | Wiring, pinout, SPI vs I2C vs ABZ |
+| [bringup.md](bringup.md) | Build, flash, bring-up checklist, console |
+| [modes.md](modes.md) | Haptic mode descriptions |
 
-## Planned Documents
-
-- `hardware.md` — Wiring, pinout, power, mechanical notes
-- `modes.md` — Detailed haptic mode definitions and parameters
-- `bringup.md` — Step-by-step hardware bring-up checklist
-- `communication.md` — MQTT topic design and Homebridge / HA integration
-- `3d-models.md` — Notes for future 86 panel and enclosure designs (later)
-
-Add new documents here as the project progresses.
+Planned later: `communication.md` (MQTT), `3d-models.md` (86 panel).

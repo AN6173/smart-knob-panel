@@ -1,0 +1,13 @@
+build/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
+.vscode/
+.idea/
+.clangd
+compile_commands.json
+verbose
+*.pyc
+__pycache__/
+.DS_Store

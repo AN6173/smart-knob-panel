@@ -1,0 +1,15 @@
+idf_component_register(
+    SRCS
+        "app_main.cpp"
+        "foc_task.cpp"
+        "console_cmd.cpp"
+        "button_ctrl.cpp"
+        "haptic/haptic_mode.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        console
+        nvs_flash
+        driver
+        mt6701_spi
+)
