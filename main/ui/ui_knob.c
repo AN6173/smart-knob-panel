@@ -277,6 +277,8 @@ static void refresh_status(void)
     lv_color_t col;
     if (!foc_is_ready()) {
         ic = IC_ACT, txt = "电机校准中", col = C_GOLD;
+    } else if (!foc_motor_enabled()) {
+        ic = IC_STOP, txt = "电机已禁用", col = C_TXT2;
     } else if (!ok) {
         ic = IC_ALERT, txt = "驱动未就绪 · 无力反馈", col = C_RED;
     } else if (c == FOC_CTRL_SENSOR) {

@@ -40,6 +40,8 @@ void foc_set_haptic_mode_pos(haptic_mode_t mode, int32_t pos)
 }
 void foc_get_haptic_snapshot(foc_haptic_snapshot_t *o) { *o = s_hs; }
 bool foc_is_ok(void) { return s_ok; }
+static bool s_men = true;
+bool foc_motor_enabled(void) { return s_men; }
 bool foc_is_ready(void) { return s_ready; }
 foc_ctrl_mode_t foc_get_ctrl_mode(void) { return s_ctrl; }
 void foc_set_ctrl_mode(foc_ctrl_mode_t m) { s_ctrl = m; }
@@ -125,5 +127,6 @@ int main(void)
     ui_knob_post(UI_EVT_LONG); run(200);
     s_ok = false; s_ctrl = FOC_CTRL_SENSOR; s_sleep = false; s_i = 0; s_irms = 0;
     turn(3, 0); run(1500); shot("10_degraded_menu");
+    s_men = false; run(400); shot("11_motor_disabled");
     return 0;
 }

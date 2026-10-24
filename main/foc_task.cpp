@@ -93,8 +93,23 @@ static void en_gpio_prepare(gpio_num_t pin)
     gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT);
 }
 
+/* 电机总开关（Kconfig KNOB_MOTOR_ENABLE）：关闭时 EN 恒低、不碰 LEDC */
+#ifdef CONFIG_KNOB_MOTOR_ENABLE
+static constexpr bool k_motor_en = true;
+#else
+static constexpr bool k_motor_en = false;
+#endif
+
+bool foc_motor_enabled(void)
+{
+    return k_motor_en;
+}
+
 static void en_set(bool on)
 {
+    if (!k_motor_en) {
+        on = false; /* 电机禁用：任何路径都不允许拉高 EN */
+    }
     if (!s_en_ready) {
         en_gpio_prepare(BOARD_DRIVER_ENABLE_GPIO);
         s_en_ready = true;
@@ -104,6 +119,9 @@ static void en_set(bool on)
 
 static void pwm_force_zero(void)
 {
+    if (!k_motor_en) {
+        return; /* 未配置 LEDC，不碰 PWM 外设 */
+    }
     /* 直接把 LEDC 占空比打到 0，避免 disable 后仍有残留开关 */
     const ledc_channel_t chs[] = {
         (ledc_channel_t)BOARD_LEDC_CH_A,
@@ -145,6 +163,9 @@ static void motor_coast(void)
     s_target = 0.0f;
     s_uq = 0.0f;
     s_i_est = 0.0f;
+    if (!k_motor_en) {
+        return; /* 驱动未初始化，EN 已拉低即可 */
+    }
     s_motor.controller = MotionControlType::torque;
     s_motor.target = 0.0f;
     s_motor.disable();
@@ -675,6 +696,19 @@ static void motor_init(void)
     s_motor.linkSensor(&s_encoder);
 
     apply_supply(BOARD_V_SUPPLY_DEFAULT);
+
+    if (!k_motor_en) {
+        /* 电机禁用：只读编码器，不初始化驱动/FOC、不校准、不跑相位测试。
+         * sensor_direction 保持 UNKNOWN → FOC 环走「仅传感器」分支，直接用编码器角度导航 */
+        en_set(false);
+        s_foc_ok = false;
+        s_foc_aligned = true; /* 初始化流程结束，UI 可进入菜单 */
+        printf("\n*** 电机已禁用（CONFIG_KNOB_MOTOR_ENABLE=n）：EN=%d，仅读取编码器\n",
+               gpio_get_level(BOARD_DRIVER_ENABLE_GPIO));
+        ESP_LOGW(TAG, "motor disabled by Kconfig, encoder-only");
+        return;
+    }
+
     s_driver.init({BOARD_LEDC_CH_A, BOARD_LEDC_CH_B, BOARD_LEDC_CH_C});
     s_driver.setPwm(0, 0, 0);
     pwm_force_zero();
@@ -1022,6 +1056,10 @@ void foc_task_start(void)
  */
 void foc_phase_test(float v)
 {
+    if (!k_motor_en) {
+        printf("电机已禁用（CONFIG_KNOB_MOTOR_ENABLE=n），phasetest 不执行\n");
+        return;
+    }
     v = clampf(v, 0.3f, 3.0f);
     s_ctrl = FOC_CTRL_SENSOR; /* FOC 环只读传感器，不写 PWM */
     s_diag = true;            /* 暂停 FOC 环的「EN 强制拉低」 */

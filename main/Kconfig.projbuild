@@ -1,5 +1,15 @@
 menu "Smart Knob Panel"
 
+    config KNOB_MOTOR_ENABLE
+        bool "启用电机驱动（FOC / 校准 / PWM 输出）"
+        default n
+        help
+            总开关，默认关闭（调试屏幕/UI 时避免每次下载后电机自动运行）。
+            关闭时：不初始化 FOC、不做电角度校准、不自动跑相位测试、
+            不配置 LEDC/PWM，DRV8313 EN 始终拉低；MT6701 编码器照常读取，
+            用手拧旋钮仍可在 UI 中导航（无力反馈），状态栏显示「电机已禁用」。
+            打开后才会按原流程上电校准并输出力矩。
+
     config KNOB_SUPPLY_MV
         int "电机供电电压 VM (mV)"
         range 7000 12600

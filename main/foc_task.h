@@ -106,6 +106,9 @@ bool foc_is_ready(void);
 /** initFOC 是否成功（失败时禁止出力） */
 bool foc_is_ok(void);
 
+/** Kconfig KNOB_MOTOR_ENABLE：false 时电机驱动完全不启用（仅读编码器） */
+bool foc_motor_enabled(void);
+
 #ifdef __cplusplus
 }
 #endif
