@@ -391,8 +391,14 @@ void console_cmd_start(void)
     repl_config.prompt = "knob> ";
     repl_config.max_cmdline_length = 128;
 
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+    /* T-Display-S3 的 USB 口是 S3 原生 USB-Serial-JTAG：REPL 必须挂在这里才能打字 */
+    esp_console_dev_usb_serial_jtag_config_t jtag_config = ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_console_new_repl_usb_serial_jtag(&jtag_config, &repl_config, &repl));
+#else
     esp_console_dev_uart_config_t uart_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_console_new_repl_uart(&uart_config, &repl_config, &repl));
+#endif
 
     register_cmd("help", "显示帮助", nullptr, &cmd_help);
     register_cmd("status", "打印状态", nullptr, &cmd_status);

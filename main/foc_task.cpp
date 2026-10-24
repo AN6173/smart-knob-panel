@@ -24,6 +24,7 @@
 #include "driver/rtc_io.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
@@ -702,6 +703,11 @@ static void motor_init(void)
         }
     }
 
+    if (!foc_ok && enc_ok) {
+        printf("*** 校准失败 → 自动相位静态测试 2V\n");
+        foc_phase_test(2.0f);
+    }
+
     if (foc_ok && fresh) {
         cal_save(s_motor.zero_electric_angle, (int)s_motor.sensor_direction);
         printf("*** 校准已存 NVS，下次上电跳过\n");
@@ -964,9 +970,23 @@ void foc_phase_test(float v)
     for (int i = 0; i < 6; i++) {
         s_driver.setPwm(pat[i][0] * v, pat[i][1] * v, pat[i][2] * v);
         vTaskDelay(pdMS_TO_TICKS(400));
+        s_encoder.update();
         const float a = s_encoder.cached_angle() * 57.29578f;
-        printf("phasetest %-2s Uabc=(%.1f,%.1f,%.1f) duty=(%lu,%lu,%lu) EN=%d θm=%7.2f° Δ=%+.2f°\n",
+        /* 引脚回读：在焊盘上采样 PWM 高电平占比，验证 GPIO 真的在输出 */
+        const gpio_num_t pins[3] = {BOARD_PWM_A_GPIO, BOARD_PWM_B_GPIO, BOARD_PWM_C_GPIO};
+        int hi[3] = {0, 0, 0};
+        for (int p = 0; p < 3; p++) {
+            gpio_input_enable(pins[p]);
+        }
+        for (int k = 0; k < 4000; k++) {
+            for (int p = 0; p < 3; p++) {
+                hi[p] += gpio_get_level(pins[p]);
+            }
+            esp_rom_delay_us(1);
+        }
+        printf("phasetest %-2s Uabc=(%.1f,%.1f,%.1f) pin=(%2d%%,%2d%%,%2d%%) duty=(%lu,%lu,%lu) EN=%d θm=%7.2f° Δ=%+.2f°\n",
                names[i], pat[i][0] * v, pat[i][1] * v, pat[i][2] * v,
+               hi[0] / 40, hi[1] / 40, hi[2] / 40,
                (unsigned long)ledc_get_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)BOARD_LEDC_CH_A),
                (unsigned long)ledc_get_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)BOARD_LEDC_CH_B),
                (unsigned long)ledc_get_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)BOARD_LEDC_CH_C),
