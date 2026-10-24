@@ -438,6 +438,7 @@ void foc_get_haptic_snapshot(foc_haptic_snapshot_t *out)
     out->num_positions = s_haptic.params.num_positions;
     out->value_norm = s_haptic.value_norm;
     out->shaft_rad = s_motor.shaft_angle - s_haptic.origin;
+    out->width_rad = s_haptic.params.width_rad;
     taskEXIT_CRITICAL(&s_lock);
 }
 

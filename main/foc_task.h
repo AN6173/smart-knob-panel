@@ -79,6 +79,7 @@ typedef struct {
     int32_t num_positions;/**< 0 = 无界 */
     float value_norm;     /**< 有界模式 0–1 */
     float shaft_rad;      /**< 轴角（相对模式原点） */
+    float width_rad;      /**< 每格角宽 */
 } foc_haptic_snapshot_t;
 void foc_get_haptic_snapshot(foc_haptic_snapshot_t *out);
 
