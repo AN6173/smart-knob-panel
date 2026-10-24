@@ -41,7 +41,11 @@ static void button_task(void *arg)
     while (!foc_is_ready()) {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    printf("*** FOC 就绪，可以按键测试电机\n\n");
+    if (foc_is_ok()) {
+        printf("*** FOC 就绪，可以按键测试电机\n\n");
+    } else {
+        printf("*** FOC 校准失败：按键无效（禁止出力）。看上方 [SFOC] / 编码器自检输出，修好后重启或 recal\n\n");
+    }
 
     bool prev_down = false;
     TickType_t down_tick = 0;

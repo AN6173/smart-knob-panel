@@ -74,7 +74,11 @@
 #define BOARD_I_RMS_TAU_S         4.0f    /* I²t 热模型时间常数 */
 #define BOARD_I_OPENLOOP          0.20f   /* 开环诊断：Uq = 0.2A×Rs = 0.5V */
 #define BOARD_OPENLOOP_TIMEOUT_MS 10000   /* 开环最长运行，超时自动停 */
-#define BOARD_I_ALIGN             0.50f   /* initFOC 对齐：1.25V，仅上电约 2s */
+/* initFOC 对齐电压（Kconfig），失败按 BOARD_V_ALIGN_STEP 升档重试。
+ * 0.5A(1.25V) 实测推不动转子 → 校准失败；改 2.0V 起步（≈0.8A，仅约 2–3s） */
+#define BOARD_V_ALIGN             (CONFIG_KNOB_ALIGN_MV / 1000.0f)
+#define BOARD_V_ALIGN_MAX         (CONFIG_KNOB_ALIGN_MAX_MV / 1000.0f)
+#define BOARD_V_ALIGN_STEP        0.5f
 
 /* ========== 空闲休眠 ==========
  * 静止 + 出力≈0 持续 IDLE_MS → 拉低 EN（驱动冷态）；一动立即唤醒（编码器始终在读）。

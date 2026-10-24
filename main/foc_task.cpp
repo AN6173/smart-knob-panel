@@ -412,6 +412,11 @@ bool foc_is_ready(void)
     return s_foc_aligned;
 }
 
+bool foc_is_ok(void)
+{
+    return s_foc_ok;
+}
+
 void foc_demo_next(void)
 {
     if (!s_foc_aligned) {
@@ -443,6 +448,71 @@ void foc_demo_next(void)
         foc_stop();
         break;
     }
+}
+
+/** SimpleFOC 调试输出 → printf（不能用 Serial，会和 console 抢 UART0） */
+class PrintfSink : public Print {
+public:
+    size_t write(uint8_t c) override
+    {
+        putchar((int)c);
+        return 1;
+    }
+};
+static PrintfSink s_sfoc_print;
+
+/** 编码器自检：对齐前连续读 20 次，打印角度/CRC，排除 SPI/磁铁问题 */
+static bool encoder_sanity_check(void)
+{
+    const uint32_t ok0 = s_encoder.crc_ok_count();
+    const uint32_t fail0 = s_encoder.crc_fail_count();
+    float amin = 10.0f, amax = -10.0f;
+    for (int i = 0; i < 20; i++) {
+        s_encoder.update();
+        const float a = s_encoder.getMechanicalAngle();
+        amin = fminf(amin, a);
+        amax = fmaxf(amax, a);
+        if (i < 5) {
+            printf("*** 编码器[%d] %.2f° raw=0x%06lX crc=%s\n", i, a * 57.29578f,
+                   (unsigned long)s_encoder.last_raw(), s_encoder.last_crc_ok() ? "OK" : "BAD");
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    const uint32_t ok = s_encoder.crc_ok_count() - ok0;
+    const uint32_t fail = s_encoder.crc_fail_count() - fail0;
+    const bool good = s_encoder.bus() != Mt6701Bus::None && ok >= 18;
+    printf("*** 编码器自检 bus=%s ok=%lu fail=%lu 静止抖动=%.2f° → %s\n",
+           s_encoder.bus_name(), (unsigned long)ok, (unsigned long)fail,
+           (amax - amin) * 57.29578f, good ? "OK" : "FAIL（查 CS/CLK/MISO 接线与磁铁）");
+    return good;
+}
+
+/**
+ * 校准失败后的诊断：在两个相差 90° 的电角度上各施加 Uq，看转子转了多少。
+ * 期望 ≈ 90°/pp = 12.9° 机械角；≈0 → 没出力（EN/VM/相线/电压太低）；
+ * 方向不定/数值乱 → 编码器问题。
+ */
+static void align_move_test(float v)
+{
+    s_motor.enable();
+    s_motor.setPhaseVoltage(v, 0.0f, _3PI_2);
+    vTaskDelay(pdMS_TO_TICKS(400));
+    s_encoder.update();
+    const float a0 = s_encoder.getMechanicalAngle();
+    s_motor.setPhaseVoltage(v, 0.0f, _normalizeAngle(_3PI_2 + _PI_2));
+    vTaskDelay(pdMS_TO_TICKS(400));
+    s_encoder.update();
+    const float a1 = s_encoder.getMechanicalAngle();
+    s_motor.setPhaseVoltage(0.0f, 0.0f, 0.0f);
+    float d = (a1 - a0) * 57.29578f;
+    if (d > 180.0f) {
+        d -= 360.0f;
+    } else if (d < -180.0f) {
+        d += 360.0f;
+    }
+    printf("*** 诊断 Uq=%.2fV: 电角度 +90° → 机械 %+.2f°（期望 ±%.1f°）%s\n",
+           v, d, 90.0f / BOARD_MOTOR_POLE_PAIRS,
+           fabsf(d) < 1.0f ? " ← 转子没动：查 VM 供电 / EN / 三相线 / SimpleFOCmini" : "");
 }
 
 /**
@@ -538,37 +608,60 @@ static void motor_init(void)
     s_motor.LPF_velocity.Tf = 0.005f;
     s_motor.LPF_angle.Tf = 0.0f;
 
-    /* 对齐电压按电流折算：0.5A×2.5Ω = 1.25V（旧版 3.5V@误设 9V → 实际 4.67V ≈ 1.8A） */
-    s_motor.voltage_sensor_align = BOARD_I_ALIGN * BOARD_MOTOR_RS_OHM;
-    s_motor.voltage_limit = s_motor.voltage_sensor_align;
+    /* 打开 SimpleFOC 调试输出：initFOC 失败时能看到真实原因（[SFOC] 前缀行） */
+    printf("[SFOC] debug on\n");
+    SimpleFOCDebug::enable(&s_sfoc_print);
+
+    const bool enc_ok = encoder_sanity_check();
 
     float zero_el = 0.0f;
     int dir = 0;
     const bool have_cal = cal_load(&zero_el, &dir);
-    if (have_cal) {
-        /* 已有校准：SimpleFOC 见到方向 + 零角均已设置会跳过对齐（不再转动、不再大电流） */
-        s_motor.zero_electric_angle = zero_el;
-        s_motor.sensor_direction = (dir > 0) ? Direction::CW : Direction::CCW;
-        printf("*** 使用 NVS 校准 zero_el=%.4f dir=%d（console: recal 可重新校准）\n", zero_el, dir);
-    }
+
+    float v_align = BOARD_V_ALIGN;
+    s_motor.voltage_sensor_align = v_align;
+    /* init() 会把 voltage_sensor_align 夹到 voltage_limit 以下 → 先放到上限档 */
+    s_motor.voltage_limit = BOARD_V_ALIGN_MAX;
 
     en_set(true);
     vTaskDelay(pdMS_TO_TICKS(30));
     s_motor.init();
     s_motor.enable();
-    printf("*** initFOC %s EN=%d …\n", have_cal ? "(跳过对齐)" : "校准中（电机会轻动，手勿碰轴）",
-           gpio_get_level(BOARD_DRIVER_ENABLE_GPIO));
-    int foc_ok = s_motor.initFOC();
-    if (!foc_ok) {
-        /* 再试一次完整校准（NVS 数据也可能已失效） */
-        s_motor.sensor_direction = Direction::UNKNOWN;
-        s_motor.zero_electric_angle = NOT_SET;
-        s_motor.enable();
+
+    int foc_ok = 0;
+    if (have_cal) {
+        /* 已有校准：SimpleFOC 见到方向 + 零角均已设置会跳过对齐（不再转动、不再大电流） */
+        s_motor.zero_electric_angle = zero_el;
+        s_motor.sensor_direction = (dir > 0) ? Direction::CW : Direction::CCW;
+        printf("*** 使用 NVS 校准 zero_el=%.4f dir=%d（console: recal 可重新校准）\n", zero_el, dir);
         foc_ok = s_motor.initFOC();
     }
-    if (foc_ok && !have_cal) {
+
+    /* 完整校准：逐档升压重试，每次重置方向/零点（NVS 数据可能失效） */
+    bool fresh = false;
+    while (!foc_ok && enc_ok && v_align <= BOARD_V_ALIGN_MAX + 1e-3f) {
+        s_motor.sensor_direction = Direction::UNKNOWN;
+        s_motor.zero_electric_angle = NOT_SET;
+        s_motor.voltage_sensor_align = v_align;
+        s_motor.enable(); /* 上次失败 initFOC 内部会 disable() */
+        printf("*** initFOC 校准中 Uq=%.2fV(≈%.2fA)（电机会轻动，手勿碰轴）EN=%d …\n",
+               v_align, v_align / BOARD_MOTOR_RS_OHM, gpio_get_level(BOARD_DRIVER_ENABLE_GPIO));
+        foc_ok = s_motor.initFOC();
+        fresh = true;
+        if (!foc_ok) {
+            v_align += BOARD_V_ALIGN_STEP;
+        }
+    }
+
+    if (foc_ok && fresh) {
+        if (!s_motor.pp_check_result) {
+            ESP_LOGW(TAG, "PP check fail：极对数可能不是 %d，仍保存但请核对", BOARD_MOTOR_POLE_PAIRS);
+        }
+        s_motor.enable();
         refine_zero_electric_angle(s_motor.voltage_sensor_align);
         cal_save(s_motor.zero_electric_angle, (int)s_motor.sensor_direction);
+    } else if (!foc_ok && enc_ok) {
+        align_move_test(BOARD_V_ALIGN_MAX);
     }
     s_motor.voltage_limit = s_uq_cap;
     motor_coast();
@@ -581,7 +674,7 @@ static void motor_init(void)
         /* 零角未知时任何 Uq 都会落在错误的 d/q 上 → 纯发热不出力；禁止上电 */
         s_foc_ok = false;
         printf("\n*** initFOC FAIL —— 禁止出力（电角度未知会产生 d 轴电流 → 发热）\n"
-               "*** 查: 编码器 CRC / 磁铁间距 / Mini.EN 是否接 GPIO%d / 极对数\n",
+               "*** 原因见上方 [SFOC] 行 / 编码器自检 / 诊断行；Mini.EN 应接 GPIO%d\n",
                (int)BOARD_DRIVER_ENABLE_GPIO);
         ESP_LOGW(TAG, "initFOC failed");
     }

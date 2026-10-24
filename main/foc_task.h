@@ -82,8 +82,10 @@ void foc_stop(void);
  */
 void foc_demo_next(void);
 
-/** FOC 是否已完成 initFOC（按键任务需等待） */
+/** 初始化流程是否结束（成功或失败都会置位，按键任务需等待） */
 bool foc_is_ready(void);
+/** initFOC 是否成功（失败时禁止出力） */
+bool foc_is_ok(void);
 
 #ifdef __cplusplus
 }

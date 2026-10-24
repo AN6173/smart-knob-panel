@@ -23,4 +23,19 @@ menu "Smart Knob Panel"
         help
             I²t 热模型：估算 RMS 电流超过该值时自动按比例降低峰值上限。
 
+    config KNOB_ALIGN_MV
+        int "initFOC 对齐电压 Uq (mV，首档)"
+        range 800 4000
+        default 2000
+        help
+            仅上电校准约 2–3s 使用。2.0V/2.5Ω ≈ 0.8A。失败时自动按 +0.5V 升档重试，
+            最高 KNOB_ALIGN_MAX_MV。电压太低 → 齿槽/摩擦卡住转子 → "Failed to notice movement"。
+
+    config KNOB_ALIGN_MAX_MV
+        int "initFOC 对齐电压上限 (mV)"
+        range 800 4000
+        default 3000
+        help
+            3.0V/2.5Ω ≈ 1.2A，仅短时，低于电机 2A 极限。
+
 endmenu
