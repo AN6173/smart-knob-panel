@@ -80,6 +80,7 @@ static constexpr float ANGLE_DEADBAND = 0.01f; /* rad，约 0.6°，静止零电
 static int64_t s_openloop_start_us = 0;
 
 static bool s_en_ready = false;
+static volatile bool s_diag = false; /* 诊断中：FOC 环不碰 EN/PWM */
 
 static void en_gpio_prepare(gpio_num_t pin)
 {
@@ -898,7 +899,7 @@ static void foc_loop_task(void *arg)
     while (true) {
         /* 停机/校准失败：只刷传感器；周期性再拉低 EN，防止被别的路径打开 */
         if (s_ctrl == FOC_CTRL_SENSOR || !s_foc_ok) {
-            if (gpio_get_level(BOARD_DRIVER_ENABLE_GPIO) != 0) {
+            if (!s_diag && gpio_get_level(BOARD_DRIVER_ENABLE_GPIO) != 0) {
                 en_set(false);
                 pwm_force_zero();
             }
@@ -942,4 +943,39 @@ void foc_task_start(void)
                             2,
                             nullptr,
                             0);
+}
+
+/**
+ * 相位静态测试：逐个施加 6 个换相状态（+V 加在 1 或 2 相，其余 0），
+ * 每步 400ms，打印 LEDC 实际占空寄存器与编码器角。正常应得到 6 个间隔 ≈360/(6·pp)° 的位置。
+ */
+void foc_phase_test(float v)
+{
+    v = clampf(v, 0.3f, 3.0f);
+    s_ctrl = FOC_CTRL_SENSOR; /* FOC 环只读传感器，不写 PWM */
+    s_diag = true;            /* 暂停 FOC 环的「EN 强制拉低」 */
+    vTaskDelay(pdMS_TO_TICKS(5));
+    static const float pat[6][3] = {
+        {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 1, 1}, {0, 0, 1}, {1, 0, 1},
+    };
+    static const char *names[6] = {"A", "AB", "B", "BC", "C", "CA"};
+    en_set(true);
+    float a_prev = -1.0f;
+    for (int i = 0; i < 6; i++) {
+        s_driver.setPwm(pat[i][0] * v, pat[i][1] * v, pat[i][2] * v);
+        vTaskDelay(pdMS_TO_TICKS(400));
+        const float a = s_encoder.cached_angle() * 57.29578f;
+        printf("phasetest %-2s Uabc=(%.1f,%.1f,%.1f) duty=(%lu,%lu,%lu) EN=%d θm=%7.2f° Δ=%+.2f°\n",
+               names[i], pat[i][0] * v, pat[i][1] * v, pat[i][2] * v,
+               (unsigned long)ledc_get_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)BOARD_LEDC_CH_A),
+               (unsigned long)ledc_get_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)BOARD_LEDC_CH_B),
+               (unsigned long)ledc_get_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)BOARD_LEDC_CH_C),
+               gpio_get_level(BOARD_DRIVER_ENABLE_GPIO), a, a_prev < 0 ? 0.0f : a - a_prev);
+        a_prev = a;
+    }
+    s_driver.setPwm(0, 0, 0);
+    pwm_force_zero();
+    en_set(false);
+    s_diag = false;
+    motor_coast();
 }

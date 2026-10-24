@@ -73,6 +73,9 @@ float foc_get_supply_voltage(void);
 /** 清除 NVS 中的电角度校准，下次上电重新 initFOC */
 void foc_clear_calibration(void);
 
+/** 相位静态测试（诊断用，≤3V，每步 400ms，结束 EN=0） */
+void foc_phase_test(float v);
+
 /** 急停：回 sensor，力矩/目标清零 */
 void foc_stop(void);
 

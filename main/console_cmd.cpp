@@ -162,6 +162,14 @@ static int cmd_recal(int argc, char **argv)
     return 0;
 }
 
+static int cmd_phasetest(int argc, char **argv)
+{
+    float v = (argc >= 2) ? strtof(argv[1], nullptr) : 2.0f;
+    foc_set_angle_stream(false);
+    foc_phase_test(v);
+    return 0;
+}
+
 static int cmd_ctrl(int argc, char **argv)
 {
     if (argc < 2) {
@@ -394,6 +402,7 @@ void console_cmd_start(void)
     register_cmd("ilim", "峰值电流上限", "<amps>", &cmd_ilim);
     register_cmd("vsup", "供电电压", "<volts>", &cmd_vsup);
     register_cmd("power", "电流/铜损估算", nullptr, &cmd_power);
+    register_cmd("phasetest", "相位静态测试", "[volts]", &cmd_phasetest);
     register_cmd("recal", "重新校准电角度", nullptr, &cmd_recal);
     register_cmd("ctrl", "控制路径", "<sensor|openloop|angle|haptic>", &cmd_ctrl);
     register_cmd("mode", "触感模式", "<free|detent|switch|dimmer|curtain>", &cmd_mode);
