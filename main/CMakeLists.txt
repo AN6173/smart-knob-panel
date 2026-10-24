@@ -10,6 +10,7 @@ idf_component_register(
     REQUIRES
         console
         nvs_flash
+        esp_timer
         driver
         mt6701_spi
 )

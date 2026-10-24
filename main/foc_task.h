@@ -5,6 +5,8 @@
  * @brief FOC 控制任务对外接口（控制台 / 日后 MQTT 都走这里调模式）。
  */
 
+#include <stdbool.h>
+
 #include "haptic/haptic_mode.h"
 
 #ifdef __cplusplus
@@ -36,24 +38,47 @@ void foc_set_detent_count(int32_t count);
 void foc_set_target(float value);
 float foc_get_target(void);
 
-/** 遥测；指针可为 NULL。angle=轴角(可多圈), sensor=编码器单圈[0,2π) */
-void foc_get_telemetry(float *angle, float *velocity, float *torque);
+/** 遥测；指针可为 NULL。angle=轴角(可多圈), sensor=编码器单圈[0,2π)
+ *  current = q 轴估算电流 (A)，(Uq − Ke·ω)/Rs */
+void foc_get_telemetry(float *angle, float *velocity, float *current);
+
+/** 电机电气遥测（估算）；指针可为 NULL */
+typedef struct {
+    float uq;          /**< 实际下发 Uq (V) */
+    float i_est;       /**< 估算 q 轴电流 (A) */
+    float i_rms;       /**< I²t 热模型 RMS 电流 (A) */
+    float i_limit_eff; /**< 当前生效的峰值限流 (A，含热降额) */
+    float p_copper;    /**< 估算铜损 3/2·I²·Rs (W，RMS) */
+    bool sleeping;     /**< 空闲休眠中（EN=0） */
+} foc_power_t;
+void foc_get_power(foc_power_t *out);
 void foc_get_position(float *shaft_rad, float *sensor_rad, float *velocity);
 
 /** 串口实时打印角度（默认开启，约 10 Hz） */
 void foc_set_angle_stream(bool enable);
 bool foc_get_angle_stream(void);
 
-/** 运行时限压（V），夹在 0.5 .. BOARD_V_SUPPLY */
+/** 峰值电流上限 (A)，夹在 0.05 .. BOARD_I_LIMIT_ABS */
+void foc_set_current_limit(float amps);
+float foc_get_current_limit(void);
+
+/** Uq 硬上限 (V)，额外保险；默认 = BOARD_I_LIMIT_ABS·Rs + 反电动势余量 */
 void foc_set_voltage_limit(float vlim);
 float foc_get_voltage_limit(void);
+
+/** 供电电压 VM (V)，必须与实物一致 */
+void foc_set_supply_voltage(float v);
+float foc_get_supply_voltage(void);
+
+/** 清除 NVS 中的电角度校准，下次上电重新 initFOC */
+void foc_clear_calibration(void);
 
 /** 急停：回 sensor，力矩/目标清零 */
 void foc_stop(void);
 
 /**
  * 按键演示：短按切换下一档测试，长按急停。
- * 档位：停(sensor) → 开环慢转 → 闭环锁角 → 卡位 → 停 …
+ * 档位：停(sensor) → 自由 → 卡位 → 停 …
  */
 void foc_demo_next(void);
 

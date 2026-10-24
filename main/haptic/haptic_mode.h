@@ -2,9 +2,16 @@
 
 /**
  * @file haptic_mode.h
- * @brief 触感模式：根据轴角/速度计算力矩指令（电压量纲，交给 SimpleFOC torque 模式）。
+ * @brief 触感模式（SmartKnob 思路）：根据轴角/速度计算 q 轴电流指令（单位 A）。
  *
- * Free / Detent 已可用；Switch / Dimmer / Curtain 为可运行的 stub，参数待上板细调。
+ * 输出是「电流」而非电压：foc_task 再按 Uq = I·Rs + Ke·ω 换算并做严格限流，
+ * 因此这里的强度参数与供电电压无关，换 7.4V/12V 手感一致。
+ *
+ * 统一模型：一串宽度为 width 的虚拟格位（可有界），
+ *   - 格内：死区外的线性弹簧把轴拉向格中心（静止在中心时电流=0，不发热）
+ *   - 越过 snap 点：格位 +1/-1，力矩方向翻转 → 「咔哒」感
+ *   - 有界模式越界：更硬的端点弹簧
+ *   - 运动阻尼：仅在转动时出力
  */
 
 #include <stdint.h>
@@ -14,38 +21,45 @@ extern "C" {
 #endif
 
 typedef enum {
-    HAPTIC_FREE = 0,    /**< 近零力矩，自由转动 */
-    HAPTIC_DETENT,      /**< 离散卡位（如 12 / 24） */
-    HAPTIC_SWITCH,      /**< 强回中到 0° 或 180° */
-    HAPTIC_DIMMER,      /**< 软限位，映射 0–100%（stub） */
-    HAPTIC_CURTAIN,     /**< 行程端点（stub） */
+    HAPTIC_FREE = 0,    /**< 零力矩，自由转动 */
+    HAPTIC_DETENT,      /**< 离散卡位（如 12 / 24），无界 */
+    HAPTIC_SWITCH,      /**< 双稳态开关（2 位，有界） */
+    HAPTIC_DIMMER,      /**< 调光 0–100%（270°，细腻无卡位 + 软端点） */
+    HAPTIC_CURTAIN,     /**< 窗帘 0–100%（一圈 20 格 + 端点） */
     HAPTIC_MODE_COUNT
 } haptic_mode_t;
 
 typedef struct {
-    int32_t detent_count;       /**< 每圈卡位数 */
-    float detent_strength;      /**< 卡位力矩强度 */
-    float snap_point;           /**< 越过半宽多少比例时跳到下一格 */
-    float endstop_strength;     /**< 端点力矩 */
-    float range_rad;            /**< 有界模式总行程 (rad) */
+    float width_rad;            /**< 每格角宽 (rad) */
+    int32_t num_positions;      /**< 格位数；0 = 无界 */
+    float detent_kp;            /**< 卡位弹簧 A/rad */
+    float endstop_kp;           /**< 端点弹簧 A/rad */
+    float damping;              /**< 阻尼 A/(rad/s) */
+    float snap_point;           /**< 越过 width×snap 换格（>0.5 带迟滞） */
+    float dead_zone;            /**< 格中心死区占 width 比例（静止零电流） */
+    float i_peak;               /**< 本模式电流上限 A（再受全局限流约束） */
 } haptic_params_t;
 
 typedef struct {
     haptic_mode_t mode;
     haptic_params_t params;
-    int32_t position;           /**< 当前卡位 / 开关索引 */
-    float value_norm;           /**< Dimmer/Curtain：0.0–1.0 */
+    float origin;               /**< 第 0 格中心对应的轴角 */
+    int32_t position;           /**< 当前格位 */
+    float value_norm;           /**< 有界模式：0.0–1.0 */
 } haptic_state_t;
 
 void haptic_init(haptic_state_t *state);
-void haptic_set_mode(haptic_state_t *state, haptic_mode_t mode);
+/** 切模式并以 shaft_angle 为新原点（不会突跳） */
+void haptic_set_mode(haptic_state_t *state, haptic_mode_t mode, float shaft_angle);
+/** 修改卡位数（DETENT），保持当前角为格中心 */
+void haptic_set_detent_count(haptic_state_t *state, int32_t count, float shaft_angle);
 const char *haptic_mode_name(haptic_mode_t mode);
 
 /**
  * 由 FOC 任务每周期调用；禁止在此打日志 / 分配内存。
- * @return 力矩指令（与 motor.move 在 torque 模式下的量纲一致）
+ * @return q 轴电流指令 (A)
  */
-float haptic_compute_torque(haptic_state_t *state, float shaft_angle, float shaft_velocity);
+float haptic_compute_current(haptic_state_t *state, float shaft_angle, float shaft_velocity);
 
 #ifdef __cplusplus
 }

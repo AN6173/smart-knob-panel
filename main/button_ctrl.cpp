@@ -12,8 +12,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "driver/gpio.h"
-
 #include "board_config.h"
 #include "foc_task.h"
 
@@ -36,7 +34,7 @@ static void button_task(void *arg)
     gpio_config(&io);
 
     printf("\n*** 按键 GPIO%d：短按=停→自由→卡位→停（后两档可一直跑）\n"
-           "*** 长按=急停。自由/卡位空闲力矩≈0，不应发烫\n\n",
+           "*** 长按=急停。自由/卡位静止零电流，空闲自动休眠\n\n",
            (int)BOARD_USER_BTN_GPIO);
     ESP_LOGI(TAG, "user button on GPIO%d (active-low)", (int)BOARD_USER_BTN_GPIO);
 
@@ -98,14 +96,15 @@ static void status_log_task(void *arg)
     vTaskDelay(pdMS_TO_TICKS(500));
 
     while (true) {
-        float shaft = 0, sens = 0, vel = 0, torque = 0;
+        float shaft = 0, sens = 0, vel = 0;
         foc_get_position(&shaft, &sens, &vel);
-        foc_get_telemetry(nullptr, nullptr, &torque);
+        foc_power_t pw = {};
+        foc_get_power(&pw);
         const float deg = sens * 180.0f / 3.14159265f;
-        printf("[stat] ctrl=%-8s ang=%6.1f° shaft=%+.2f vel=%+.2f cmd=%+.2f Vlim=%.1f EN=%d\n",
+        printf("[stat] ctrl=%-8s ang=%6.1f° shaft=%+.2f vel=%+.2f I=%+.3fA Irms=%.3fA Pcu=%.0fmW sleep=%d EN=%d\n",
                foc_ctrl_mode_name(foc_get_ctrl_mode()),
-               deg, shaft, vel, torque, foc_get_voltage_limit(),
-               gpio_get_level(BOARD_DRIVER_ENABLE_GPIO));
+               deg, shaft, vel, pw.i_est, pw.i_rms, pw.p_copper * 1000.0f,
+               (int)pw.sleeping, gpio_get_level(BOARD_DRIVER_ENABLE_GPIO));
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

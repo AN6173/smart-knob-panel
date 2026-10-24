@@ -1,0 +1,26 @@
+menu "Smart Knob Panel"
+
+    config KNOB_SUPPLY_MV
+        int "电机供电电压 VM (mV)"
+        range 7000 12600
+        default 12000
+        help
+            DRV8313 的 VM 实际电压（2S 锂电 7.4V … 12V 适配器）。
+            必须与实物一致：设低了会让所有电压指令按 Vreal/Vset 放大，电流同比变大、发热。
+            运行时也可用控制台 vsup <V> 临时修改。
+
+    config KNOB_I_LIMIT_MA
+        int "触感峰值电流上限 (mA，软件估算)"
+        range 50 1000
+        default 350
+        help
+            触感/锁角模式下 q 轴估算电流的硬上限。2804 额定 0.5A，默认 0.35A 留余量。
+
+    config KNOB_I_RMS_LIMIT_MA
+        int "持续(RMS)电流上限 (mA，热模型)"
+        range 50 500
+        default 200
+        help
+            I²t 热模型：估算 RMS 电流超过该值时自动按比例降低峰值上限。
+
+endmenu

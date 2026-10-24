@@ -39,7 +39,7 @@ test detent 12     # 虚拟卡位
 stop               # 随时急停
 ```
 
-手动细调也可用：`ctrl openloop` / `ctrl angle` / `mode detent`、`vlim 4`（先低压）、`target ...`。
+手动细调也可用：`ctrl openloop` / `ctrl angle` / `mode detent`、`ilim 0.2`（先小电流）、`target ...`。
 
 ## Console commands
 
@@ -47,7 +47,11 @@ stop               # 随时急停
 |---------|-------------|
 | `help` / `status` / `stream on\|off` | 基础 |
 | `stop` | 急停 → sensor |
-| `vlim <V>` | 限压 |
+| `ilim <A>` | 峰值电流上限（默认 0.35A） |
+| `vlim <V>` | Uq 硬上限 |
+| `vsup <V>` | 供电电压（须与实物一致） |
+| `power` | 估算电流 / 铜损 / 休眠 |
+| `recal` | 清除电角度校准并重启 |
 | `test spin\|hold\|detent\|step` | 快捷电机测试 |
 | `ctrl sensor\|openloop\|angle\|haptic` | 控制路径 |
 | `mode free\|detent\|switch\|dimmer\|curtain` | 触感 |
