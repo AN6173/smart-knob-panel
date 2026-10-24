@@ -488,83 +488,129 @@ static bool encoder_sanity_check(void)
 }
 
 /**
- * 校准失败后的诊断：在两个相差 90° 的电角度上各施加 Uq，看转子转了多少。
- * 期望 ≈ 90°/pp = 12.9° 机械角；≈0 → 没出力（EN/VM/相线/电压太低）；
- * 方向不定/数值乱 → 编码器问题。
+ * 自研电角度校准（替代 SimpleFOC alignSensor，参考 SmartKnob 的做法）。
+ *
+ * SimpleFOC 的方向检测在本硬件上反复 "Failed to notice movement"（无预对齐、
+ * 只比较两个端点角度，转子起步跳极/齿槽卡住时判定失败），且失败时没有过程数据。
+ * 这里：
+ *   1. 先在 θe=3π/2 预对齐 500ms，消除起始位置不确定
+ *   2. 正向扫 CAL_SWEEP_EREV 个电周期，再反向扫回；每 30° 电角度停稳采样，每 90° 打印机械角
+ *   3. 由展开后的机械位移得到方向 + 估算极对数（核对 pp）
+ *   4. 对 (dir·pp·θm − θe) 做圆周平均得零点：正反向摩擦滞后抵消，齿槽误差平均
+ * 成功后把方向/零点交给 SimpleFOC，initFOC 将跳过它自己的对齐。
  */
-static void align_move_test(float v)
+static constexpr int CAL_SWEEP_EREV = 3;        /* 每个方向扫的电周期数 */
+static constexpr int CAL_SAMPLES_PER_EREV = 12; /* 每 30° 电角度采样一次 */
+
+static float unwrap_step(float now, float prev)
 {
-    s_motor.enable();
-    s_motor.setPhaseVoltage(v, 0.0f, _3PI_2);
-    vTaskDelay(pdMS_TO_TICKS(400));
-    s_encoder.update();
-    const float a0 = s_encoder.getMechanicalAngle();
-    s_motor.setPhaseVoltage(v, 0.0f, _normalizeAngle(_3PI_2 + _PI_2));
-    vTaskDelay(pdMS_TO_TICKS(400));
-    s_encoder.update();
-    const float a1 = s_encoder.getMechanicalAngle();
-    s_motor.setPhaseVoltage(0.0f, 0.0f, 0.0f);
-    float d = (a1 - a0) * 57.29578f;
-    if (d > 180.0f) {
-        d -= 360.0f;
-    } else if (d < -180.0f) {
-        d += 360.0f;
+    float d = now - prev;
+    if (d > (float)M_PI) {
+        d -= 2.0f * (float)M_PI;
+    } else if (d < -(float)M_PI) {
+        d += 2.0f * (float)M_PI;
     }
-    printf("*** 诊断 Uq=%.2fV: 电角度 +90° → 机械 %+.2f°（期望 ±%.1f°）%s\n",
-           v, d, 90.0f / BOARD_MOTOR_POLE_PAIRS,
-           fabsf(d) < 1.0f ? " ← 转子没动：查 VM 供电 / EN / 三相线 / SimpleFOCmini" : "");
+    return d;
 }
 
-/**
- * 多点精校电角度零点（仅首次上电，结果存 NVS）。
- *
- * SimpleFOC 默认只在 3π/2 一个电角度对齐一次，齿槽力矩/摩擦会让转子停偏几个电角度，
- * 零点偏差 δ 会让一部分电压落到 d 轴：同样的力矩需要 1/cos(δ) 倍电流，且产生无用 d 轴电流。
- * 这里正、反各扫一整圈机械角（= pp 个电周期），每 1/8 电周期停稳采样一次，
- * 对 (dir·pp·θm − θe) 做圆周平均：正反向摩擦滞后相互抵消，齿槽误差被平均。
- */
-static bool refine_zero_electric_angle(float v_align)
+static bool calibrate_electrical_angle(float v_align, Direction *out_dir, float *out_zero)
 {
     const int pp = BOARD_MOTOR_POLE_PAIRS;
-    const int dir = (int)s_motor.sensor_direction;
-    const int samples_per_erev = 8;
-    const float step = 0.02f;                       /* 电角度步进 rad */
-    const float span = 2.0f * (float)M_PI * pp;     /* 一整圈机械角 */
-    const float sample_every = 2.0f * (float)M_PI / samples_per_erev;
-    float sum_s = 0.0f, sum_c = 0.0f;
+    const float step = 0.01f; /* 电角度步进 rad / 1ms */
+    const float seg = 2.0f * (float)M_PI / CAL_SAMPLES_PER_EREV;
+    const int nseg = CAL_SWEEP_EREV * CAL_SAMPLES_PER_EREV;
+    static float th_s[2 * CAL_SWEEP_EREV * CAL_SAMPLES_PER_EREV + 1];
+    static float mech_s[2 * CAL_SWEEP_EREV * CAL_SAMPLES_PER_EREV + 1];
     int n = 0;
 
+    printf("*** 自研校准 Uq=%.2fV(≈%.2fA)：正反各扫 %d 电周期（手勿碰轴）\n",
+           v_align, v_align / BOARD_MOTOR_RS_OHM, CAL_SWEEP_EREV);
+
+    /* 1) 预对齐 */
+    s_motor.setPhaseVoltage(v_align, 0.0f, _3PI_2);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    s_encoder.update();
+    float mech_prev = s_encoder.getMechanicalAngle();
+    float mech_unwrapped = 0.0f;
+    th_s[n] = 0.0f;
+    mech_s[n] = mech_prev;
+    n++;
+    printf("    θe=   +0° θm=%7.2f° (Δ=  +0.00°)\n", mech_prev * 57.29578f);
+
+    /* 2) 正向 → 反向 */
+    float te = 0.0f; /* 相对电角度 */
+    float mech_fwd_end = 0.0f;
     for (int pass = 0; pass < 2; pass++) {
         const float sgn = (pass == 0) ? 1.0f : -1.0f;
-        float next_sample = sample_every;
-        for (float t = 0.0f; t <= span + 1e-4f; t += step) {
-            const float th = _3PI_2 + sgn * t;
-            s_motor.setPhaseVoltage(v_align, 0.0f, _normalizeAngle(th));
-            vTaskDelay(1);
-            if (t >= next_sample) {
-                next_sample += sample_every;
-                vTaskDelay(pdMS_TO_TICKS(80)); /* 停稳 */
+        for (int k = 0; k < nseg; k++) {
+            const float target = te + sgn * seg;
+            while ((sgn > 0.0f) ? (te < target) : (te > target)) {
+                te += sgn * step;
+                if ((sgn > 0.0f) ? (te > target) : (te < target)) {
+                    te = target;
+                }
+                s_motor.setPhaseVoltage(v_align, 0.0f, _normalizeAngle(_3PI_2 + te));
+                vTaskDelay(1);
+                /* 过程中持续跟踪展开角，防止漏整圈 */
                 s_encoder.update();
-                const float mech = s_encoder.getMechanicalAngle();
-                /* 与 SimpleFOC 定义一致：在 θe=3π/2 处 zero = dir·pp·θm */
-                const float z = _normalizeAngle((float)(dir * pp) * mech - (th - _3PI_2));
-                sum_s += sinf(z);
-                sum_c += cosf(z);
-                n++;
+                const float m = s_encoder.getMechanicalAngle();
+                mech_unwrapped += unwrap_step(m, mech_prev);
+                mech_prev = m;
             }
+            vTaskDelay(pdMS_TO_TICKS(60)); /* 停稳 */
+            s_encoder.update();
+            const float m = s_encoder.getMechanicalAngle();
+            mech_unwrapped += unwrap_step(m, mech_prev);
+            mech_prev = m;
+            th_s[n] = te;
+            mech_s[n] = m;
+            n++;
+            if (((k + 1) % 3) == 0) { /* 每 90° 电角度打印一次 */
+                printf("    θe=%+5.0f° θm=%7.2f° (Δ=%+7.2f°)\n",
+                       te * 57.29578f, m * 57.29578f, mech_unwrapped * 57.29578f);
+            }
+        }
+        if (pass == 0) {
+            mech_fwd_end = mech_unwrapped;
         }
     }
     s_motor.setPhaseVoltage(0.0f, 0.0f, 0.0f);
 
-    const float r = sqrtf(sum_s * sum_s + sum_c * sum_c) / (float)(n > 0 ? n : 1);
-    const float z = _normalizeAngle(atan2f(sum_s, sum_c));
-    printf("*** 精校零点: %d 点, 一致性 R=%.3f (1=完美), zero_el %.4f → %.4f\n",
-           n, r, s_motor.zero_electric_angle, z);
-    if (n < 8 || r < 0.95f) {
-        ESP_LOGW(TAG, "zero refine inconsistent (R=%.3f), keep SimpleFOC value", r);
+    /* 3) 方向 + 极对数核对 */
+    const float e_travel = CAL_SWEEP_EREV * 2.0f * (float)M_PI;
+    const float m_travel = mech_fwd_end;
+    printf("*** 正向电角 %.0f° → 机械 %+.2f°（期望 ±%.2f°），回程残差 %+.2f°\n",
+           e_travel * 57.29578f, m_travel * 57.29578f, e_travel / pp * 57.29578f,
+           mech_unwrapped * 57.29578f);
+    if (fabsf(m_travel) < 0.25f * e_travel / pp) {
+        printf("*** 校准失败：转子几乎没跟随（<25%%）→ 电压太低/卡住/相线或 VM 问题\n");
         return false;
     }
-    s_motor.zero_electric_angle = z;
+    const float pp_est = e_travel / fabsf(m_travel);
+    printf("*** 估算极对数 %.2f（配置 %d）\n", pp_est, pp);
+    if (fabsf(pp_est - (float)pp) > 1.0f) {
+        printf("*** 校准失败：极对数不符（转子跟随不良，或 BOARD_MOTOR_POLE_PAIRS 配错）\n");
+        return false;
+    }
+    const Direction dir = (m_travel > 0.0f) ? Direction::CW : Direction::CCW;
+    const int d = (int)dir;
+
+    /* 4) 零点圆周平均（与 SimpleFOC 定义一致：θe=3π/2 处 zero = dir·pp·θm） */
+    float ss = 0.0f, cc = 0.0f;
+    for (int i = 0; i < n; i++) {
+        const float z = _normalizeAngle((float)(d * pp) * mech_s[i] - th_s[i]);
+        ss += sinf(z);
+        cc += cosf(z);
+    }
+    const float r = sqrtf(ss * ss + cc * cc) / (float)n;
+    const float zero = _normalizeAngle(atan2f(ss, cc));
+    printf("*** 零点 %.4f rad，%d 点一致性 R=%.3f（1=完美，<0.9 视为失败）dir=%d\n",
+           zero, n, r, d);
+    if (r < 0.9f) {
+        return false;
+    }
+    *out_dir = dir;
+    *out_zero = zero;
     return true;
 }
 
@@ -637,31 +683,27 @@ static void motor_init(void)
         foc_ok = s_motor.initFOC();
     }
 
-    /* 完整校准：逐档升压重试，每次重置方向/零点（NVS 数据可能失效） */
+    /* 完整校准（自研，见 calibrate_electrical_angle）：逐档升压重试 */
     bool fresh = false;
     while (!foc_ok && enc_ok && v_align <= BOARD_V_ALIGN_MAX + 1e-3f) {
-        s_motor.sensor_direction = Direction::UNKNOWN;
-        s_motor.zero_electric_angle = NOT_SET;
-        s_motor.voltage_sensor_align = v_align;
         s_motor.enable(); /* 上次失败 initFOC 内部会 disable() */
-        printf("*** initFOC 校准中 Uq=%.2fV(≈%.2fA)（电机会轻动，手勿碰轴）EN=%d …\n",
-               v_align, v_align / BOARD_MOTOR_RS_OHM, gpio_get_level(BOARD_DRIVER_ENABLE_GPIO));
-        foc_ok = s_motor.initFOC();
-        fresh = true;
+        en_set(true);
+        Direction cal_dir = Direction::UNKNOWN;
+        float cal_zero = 0.0f;
+        if (calibrate_electrical_angle(v_align, &cal_dir, &cal_zero)) {
+            s_motor.sensor_direction = cal_dir;
+            s_motor.zero_electric_angle = cal_zero;
+            foc_ok = s_motor.initFOC(); /* 方向+零点已设 → 跳过 SimpleFOC 对齐 */
+            fresh = true;
+        }
         if (!foc_ok) {
             v_align += BOARD_V_ALIGN_STEP;
         }
     }
 
     if (foc_ok && fresh) {
-        if (!s_motor.pp_check_result) {
-            ESP_LOGW(TAG, "PP check fail：极对数可能不是 %d，仍保存但请核对", BOARD_MOTOR_POLE_PAIRS);
-        }
-        s_motor.enable();
-        refine_zero_electric_angle(s_motor.voltage_sensor_align);
         cal_save(s_motor.zero_electric_angle, (int)s_motor.sensor_direction);
-    } else if (!foc_ok && enc_ok) {
-        align_move_test(BOARD_V_ALIGN_MAX);
+        printf("*** 校准已存 NVS，下次上电跳过\n");
     }
     s_motor.voltage_limit = s_uq_cap;
     motor_coast();
