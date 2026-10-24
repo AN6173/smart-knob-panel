@@ -5,11 +5,27 @@ idf_component_register(
         "console_cmd.cpp"
         "button_ctrl.cpp"
         "haptic/haptic_mode.c"
+        "ui/lcd_tdisplay.c"
+        "ui/ui_knob.c"
+        "ui/fonts/font_cn_16.c"
+        "ui/fonts/font_cn_20.c"
+        "ui/fonts/font_cn_28.c"
+        "ui/fonts/font_num_52.c"
+        "ui/fonts/font_icon_16.c"
+        "ui/fonts/font_icon_40.c"
+        "ui/assets/img_bg.c"
+        "ui/assets/img_disc_on.c"
+        "ui/assets/img_disc_off.c"
+        "ui/assets/img_grad_ring.c"
+        "ui/assets/img_card.c"
+        "ui/assets/img_hair.c"
     INCLUDE_DIRS
         "."
     REQUIRES
         console
         nvs_flash
+        esp_timer
+        esp_lcd
         driver
         mt6701_spi
 )

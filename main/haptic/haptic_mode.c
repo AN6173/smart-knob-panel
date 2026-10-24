@@ -1,11 +1,17 @@
 /**
  * @file haptic_mode.c
- * @brief 触感力矩计算（参考 SmartKnob / esp foc_knob 的虚拟弹簧思路，简化版）。
+ * @brief 触感电流计算（参考 scottbez1/smartknob 的格位 + snap + 死区模型）。
+ *
+ * 参数整定依据（2804, Rs=2.5Ω, 12 卡位）：
+ *   格宽 30° = 0.524 rad，snap 0.55 → 最大偏离 ≈ 0.29 rad
+ *   kp = 1.1 A/rad → 峰值 ≈ 0.32A（≈0.8V），手指明显能感到「咔哒」
+ *   静止时落在死区内 → I = 0；只有拧动的那一下才有电流 → 平均电流极低
  */
 
 #include "haptic_mode.h"
 
 #include <math.h>
+#include <stdbool.h>
 
 #ifndef PI
 #define PI 3.14159265358979f
@@ -22,70 +28,90 @@ static float clampf(float v, float lo, float hi)
     return v;
 }
 
-/** 角度归一化到 (-π, π] */
-static float wrap_pm_pi(float a)
+static void params_for_mode(haptic_params_t *p, haptic_mode_t mode)
 {
-    while (a > PI) {
-        a -= 2.0f * PI;
+    /* 公共默认 */
+    p->snap_point = 0.55f;
+    p->dead_zone = 0.04f;
+    p->endstop_kp = 2.0f;
+    p->damping = 0.003f;
+    p->i_peak = 0.35f;
+
+    switch (mode) {
+    case HAPTIC_FREE:
+        p->width_rad = 2.0f * PI / 36.0f; /* 仅用于计数（上报位置） */
+        p->num_positions = 0;
+        p->detent_kp = 0.0f;
+        p->damping = 0.0f;
+        break;
+    case HAPTIC_DETENT:
+        p->width_rad = 2.0f * PI / 12.0f;
+        p->num_positions = 0;
+        p->detent_kp = 1.1f;
+        break;
+    case HAPTIC_SWITCH:
+        /* 86 盒翘板手感：两位相距 40°，强吸附 */
+        p->width_rad = 40.0f * PI / 180.0f;
+        p->num_positions = 2;
+        p->detent_kp = 1.4f;
+        p->snap_point = 0.5f;
+        p->dead_zone = 0.03f;
+        p->endstop_kp = 2.5f;
+        break;
+    case HAPTIC_DIMMER:
+        /* 270° / 100 格，不做卡位，只给轻阻尼 + 端点 */
+        p->width_rad = (270.0f * PI / 180.0f) / 100.0f;
+        p->num_positions = 101;
+        p->detent_kp = 0.0f;
+        p->damping = 0.004f;
+        p->dead_zone = 0.0f;
+        break;
+    case HAPTIC_CURTAIN:
+        p->width_rad = 2.0f * PI / 20.0f;
+        p->num_positions = 21;
+        p->detent_kp = 0.6f;
+        break;
+    case HAPTIC_MENU:
+        p->width_rad = 30.0f * PI / 180.0f;
+        p->num_positions = 5;
+        p->detent_kp = 1.1f;
+        p->endstop_kp = 2.5f;
+        break;
+    default:
+        break;
     }
-    while (a < -PI) {
-        a += 2.0f * PI;
-    }
-    return a;
 }
 
 void haptic_init(haptic_state_t *state)
 {
-    state->mode = HAPTIC_FREE;
-    state->position = 0;
-    state->value_norm = 0.0f;
-    state->params.detent_count = 12;
-    state->params.detent_strength = 1.0f;
-    state->params.snap_point = 1.1f;
-    state->params.endstop_strength = 1.5f;
-    state->params.range_rad = 2.0f * PI;
+    haptic_set_mode(state, HAPTIC_FREE, 0.0f);
 }
 
-void haptic_set_mode(haptic_state_t *state, haptic_mode_t mode)
+void haptic_set_mode(haptic_state_t *state, haptic_mode_t mode, float shaft_angle)
 {
     if (mode >= HAPTIC_MODE_COUNT) {
         mode = HAPTIC_FREE;
     }
     state->mode = mode;
+    params_for_mode(&state->params, mode);
+    state->origin = shaft_angle;
     state->position = 0;
     state->value_norm = 0.0f;
+}
 
-    switch (mode) {
-    case HAPTIC_FREE:
-        state->params.detent_count = 0;
-        state->params.detent_strength = 0.05f;
-        break;
-    case HAPTIC_DETENT:
-        state->params.detent_count = 12;
-        state->params.detent_strength = 0.35f;
-        state->params.snap_point = 1.1f;
-        break;
-    case HAPTIC_SWITCH:
-        state->params.detent_count = 2;
-        state->params.detent_strength = 1.5f;
-        state->params.snap_point = 0.55f;
-        state->params.range_rad = PI; /* 0° ↔ 180° */
-        break;
-    case HAPTIC_DIMMER:
-        state->params.detent_count = 0;
-        state->params.detent_strength = 0.2f;
-        state->params.endstop_strength = 1.5f;
-        state->params.range_rad = 270.0f * PI / 180.0f;
-        break;
-    case HAPTIC_CURTAIN:
-        state->params.detent_count = 0;
-        state->params.detent_strength = 0.3f;
-        state->params.endstop_strength = 2.0f;
-        state->params.range_rad = 2.0f * PI;
-        break;
-    default:
-        break;
+void haptic_set_detent_count(haptic_state_t *state, int32_t count, float shaft_angle)
+{
+    if (count < 2) {
+        count = 2;
     }
+    if (count > 64) {
+        count = 64;
+    }
+    haptic_set_mode(state, HAPTIC_DETENT, shaft_angle);
+    state->params.width_rad = 2.0f * PI / (float)count;
+    /* 格越窄弹簧越硬：保持 snap 点处峰值电流 ≈0.32A 恒定（12 格时 kp≈1.1 A/rad） */
+    const float edge = state->params.width_rad * state->params.snap_point;
+    state->params.detent_kp = clampf(0.32f / edge, 0.5f, 4.0f);
 }
 
 const char *haptic_mode_name(haptic_mode_t mode)
@@ -101,90 +127,57 @@ const char *haptic_mode_name(haptic_mode_t mode)
         return "dimmer";
     case HAPTIC_CURTAIN:
         return "curtain";
+    case HAPTIC_MENU:
+        return "menu";
     default:
         return "unknown";
     }
 }
 
-/** 把角度误差拉向 0 的比例力矩，并限幅 */
-static float torque_toward(float error, float strength, float limit)
+float haptic_compute_current(haptic_state_t *state, float shaft_angle, float shaft_velocity)
 {
-    float t = -strength * error;
-    return clampf(t, -limit, limit);
-}
+    const haptic_params_t *p = &state->params;
+    const float w = p->width_rad;
+    const int32_t n = p->num_positions;
 
-float haptic_compute_torque(haptic_state_t *state, float shaft_angle, float shaft_velocity)
-{
-    const float torque_limit = 0.8f; /* 电压模式≈伏特；上限低 → 持续运行也不易烫 */
-    /* 自由模式零阻尼；卡位只在偏离齿槽时出力，静止时指令≈0 */
-    const float damping = (state->mode == HAPTIC_FREE) ? 0.0f : 0.008f;
-    float torque = -damping * shaft_velocity;
+    /* 相对当前格中心的偏差 */
+    float err = shaft_angle - (state->origin + (float)state->position * w);
 
-    switch (state->mode) {
-    case HAPTIC_FREE:
-        break;
-
-    case HAPTIC_DETENT: {
-        const int32_t n = state->params.detent_count > 0 ? state->params.detent_count : 12;
-        const float width = 2.0f * PI / (float)n;
-        const float half = width * 0.5f;
-
-        /* 映射到当前格子局部坐标，中心在 half */
-        float local = fmodf(shaft_angle, width);
-        if (local < 0.0f) {
-            local += width;
-        }
-        float to_center = local - half;
-        if (fabsf(to_center) > half * state->params.snap_point) {
-            /* 越过 snap 点 → 计入下一格 */
-            int32_t step = (to_center > 0.0f) ? 1 : -1;
-            state->position += step;
-            to_center -= (float)step * width;
-        }
-        torque += torque_toward(to_center, state->params.detent_strength, torque_limit);
-        break;
+    /* snap：越过阈值换格（有界时不越界）。while 处理快速拧过多格 */
+    const float snap = w * p->snap_point;
+    while (err > snap && (n == 0 || state->position < n - 1)) {
+        state->position++;
+        err -= w;
+    }
+    while (err < -snap && (n == 0 || state->position > 0)) {
+        state->position--;
+        err += w;
     }
 
-    case HAPTIC_SWITCH: {
-        /* 双稳态：吸附到 0 或 π 中更近的一个 */
-        const float a0 = 0.0f;
-        const float a1 = PI;
-        float e0 = wrap_pm_pi(shaft_angle - a0);
-        float e1 = wrap_pm_pi(shaft_angle - a1);
-        float err = (fabsf(e0) < fabsf(e1)) ? e0 : e1;
-        state->position = (fabsf(e0) < fabsf(e1)) ? 0 : 1;
-        state->value_norm = (float)state->position;
-        torque += torque_toward(err, state->params.detent_strength * 1.5f, torque_limit);
-        break;
+    if (n > 1) {
+        state->value_norm = (float)state->position / (float)(n - 1);
     }
 
-    case HAPTIC_DIMMER:
-    case HAPTIC_CURTAIN: {
-        /* stub：软端点 + value_norm，手感参数上板后再调 */
-        const float lo = 0.0f;
-        const float hi = state->params.range_rad;
-        float a = shaft_angle;
-        while (a < lo) {
-            a += hi;
-        }
-        while (a > hi) {
-            a -= hi;
-        }
-        state->value_norm = clampf(a / hi, 0.0f, 1.0f);
+    float i_cmd = -p->damping * shaft_velocity;
 
-        if (shaft_angle < lo) {
-            torque += torque_toward(shaft_angle - lo, state->params.endstop_strength, torque_limit);
-        } else if (shaft_angle > hi) {
-            torque += torque_toward(shaft_angle - hi, state->params.endstop_strength, torque_limit);
-        } else {
-            torque += -state->params.detent_strength * 0.1f * shaft_velocity;
+    const bool out_of_range = (n > 0) &&
+        ((state->position == 0 && err < 0.0f) || (state->position == n - 1 && err > 0.0f));
+
+    if (out_of_range && fabsf(err) > w * 0.5f) {
+        /* 端点：先走完半格的卡位弹簧，再叠加硬弹簧 */
+        const float over = err - copysignf(w * 0.5f, err);
+        i_cmd += -p->detent_kp * copysignf(w * 0.5f, err) - p->endstop_kp * over;
+    } else if (p->detent_kp > 0.0f) {
+        /* 死区：静止在中心附近不出力（消除编码器噪声/摩擦导致的持续电流） */
+        const float dz = w * p->dead_zone;
+        float e = 0.0f;
+        if (err > dz) {
+            e = err - dz;
+        } else if (err < -dz) {
+            e = err + dz;
         }
-        break;
+        i_cmd += -p->detent_kp * e;
     }
 
-    default:
-        break;
-    }
-
-    return clampf(torque, -torque_limit, torque_limit);
+    return clampf(i_cmd, -p->i_peak, p->i_peak);
 }
