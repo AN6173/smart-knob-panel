@@ -31,6 +31,8 @@ const char *foc_ctrl_mode_name(foc_ctrl_mode_t mode);
 
 void foc_set_haptic_mode(haptic_mode_t mode);
 haptic_mode_t foc_get_haptic_mode(void);
+/** 切触感模式并让当前轴角落在第 position 格中心（UI 回到菜单时保持选中项） */
+void foc_set_haptic_mode_pos(haptic_mode_t mode, int32_t position);
 /** 设置卡位数量并切到 detent 模式（2–64） */
 void foc_set_detent_count(int32_t count);
 
@@ -69,6 +71,19 @@ float foc_get_voltage_limit(void);
 /** 供电电压 VM (V)，必须与实物一致 */
 void foc_set_supply_voltage(float v);
 float foc_get_supply_voltage(void);
+
+/** 触感状态快照（UI 用）：驱动未就绪时也按编码器角度实时更新 */
+typedef struct {
+    haptic_mode_t mode;
+    int32_t position;     /**< 当前格位 */
+    int32_t num_positions;/**< 0 = 无界 */
+    float value_norm;     /**< 有界模式 0–1 */
+    float shaft_rad;      /**< 轴角（相对模式原点） */
+} foc_haptic_snapshot_t;
+void foc_get_haptic_snapshot(foc_haptic_snapshot_t *out);
+
+/** FOC 任务主循环频率（Hz，1s 滑动统计；闭环时为 loopFOC 次数） */
+float foc_get_loop_hz(void);
 
 /** 清除 NVS 中的电角度校准，下次上电重新 initFOC */
 void foc_clear_calibration(void);

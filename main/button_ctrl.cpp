@@ -14,6 +14,7 @@
 
 #include "board_config.h"
 #include "foc_task.h"
+#include "ui/ui_knob.h"
 
 static const char *TAG = "btn";
 
@@ -33,8 +34,7 @@ static void button_task(void *arg)
     io.intr_type = GPIO_INTR_DISABLE;
     gpio_config(&io);
 
-    printf("\n*** 按键 GPIO%d：短按=停→自由→卡位→停（后两档可一直跑）\n"
-           "*** 长按=急停。自由/卡位静止零电流，空闲自动休眠\n\n",
+    printf("\n*** 按键 GPIO%d：短按=进入/确认，长按=返回（菜单页长按=急停）\n\n",
            (int)BOARD_USER_BTN_GPIO);
     ESP_LOGI(TAG, "user button on GPIO%d (active-low)", (int)BOARD_USER_BTN_GPIO);
 
@@ -42,7 +42,7 @@ static void button_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     if (foc_is_ok()) {
-        printf("*** FOC 就绪，可以按键测试电机\n\n");
+        printf("*** FOC 就绪：旋钮选择模式，短按进入\n\n");
     } else {
         printf("*** FOC 校准失败：按键无效（禁止出力）。看上方 [SFOC] / 编码器自检输出，修好后重启或 recal\n\n");
     }
@@ -64,19 +64,19 @@ static void button_task(void *arg)
             vTaskDelay(debounce);
             if (gpio_get_level(BOARD_USER_BTN_GPIO) != 0) {
                 if (held >= long_ms) {
-                    printf("\n>>> 长按 → 急停\n");
-                    foc_stop();
+                    printf("\n>>> 长按\n");
+                    ui_knob_post(UI_EVT_LONG);
                 } else {
-                    printf("\n>>> 短按 → 下一档\n");
-                    foc_demo_next();
+                    printf("\n>>> 短按\n");
+                    ui_knob_post(UI_EVT_SHORT);
                 }
                 prev_down = false;
             }
         } else if (down && prev_down) {
             /* 按住超过长按阈值就立刻急停，不必等松手 */
             if ((xTaskGetTickCount() - down_tick) >= long_ms) {
-                printf("\n>>> 长按 → 急停\n");
-                foc_stop();
+                printf("\n>>> 长按\n");
+                ui_knob_post(UI_EVT_LONG);
                 /* 等松手，避免连触发 */
                 while (gpio_get_level(BOARD_USER_BTN_GPIO) == 0) {
                     vTaskDelay(pdMS_TO_TICKS(20));
@@ -105,10 +105,10 @@ static void status_log_task(void *arg)
         foc_power_t pw = {};
         foc_get_power(&pw);
         const float deg = sens * 180.0f / 3.14159265f;
-        printf("[stat] ctrl=%-8s ang=%6.1f° shaft=%+.2f vel=%+.2f I=%+.3fA Irms=%.3fA Pcu=%.0fmW sleep=%d EN=%d\n",
+        printf("[stat] ctrl=%-8s ang=%6.1f° shaft=%+.2f vel=%+.2f I=%+.3fA Irms=%.3fA Pcu=%.0fmW sleep=%d EN=%d loop=%.0fHz\n",
                foc_ctrl_mode_name(foc_get_ctrl_mode()),
                deg, shaft, vel, pw.i_est, pw.i_rms, pw.p_copper * 1000.0f,
-               (int)pw.sleeping, gpio_get_level(BOARD_DRIVER_ENABLE_GPIO));
+               (int)pw.sleeping, gpio_get_level(BOARD_DRIVER_ENABLE_GPIO), foc_get_loop_hz());
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

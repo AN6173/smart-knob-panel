@@ -5,12 +5,19 @@ idf_component_register(
         "console_cmd.cpp"
         "button_ctrl.cpp"
         "haptic/haptic_mode.c"
+        "ui/lcd_tdisplay.c"
+        "ui/ui_knob.c"
+        "ui/fonts/font_cn_16.c"
+        "ui/fonts/font_cn_22.c"
+        "ui/fonts/font_cn_36.c"
+        "ui/fonts/font_num_48.c"
     INCLUDE_DIRS
         "."
     REQUIRES
         console
         nvs_flash
         esp_timer
+        esp_lcd
         driver
         mt6701_spi
 )

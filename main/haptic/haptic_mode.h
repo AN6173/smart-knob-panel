@@ -26,6 +26,7 @@ typedef enum {
     HAPTIC_SWITCH,      /**< 双稳态开关（2 位，有界） */
     HAPTIC_DIMMER,      /**< 调光 0–100%（270°，细腻无卡位 + 软端点） */
     HAPTIC_CURTAIN,     /**< 窗帘 0–100%（一圈 20 格 + 端点） */
+    HAPTIC_MENU,        /**< UI 菜单：5 格有界，30°/格，清晰咔哒 */
     HAPTIC_MODE_COUNT
 } haptic_mode_t;
 

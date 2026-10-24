@@ -11,6 +11,7 @@
 #include "button_ctrl.h"
 #include "console_cmd.h"
 #include "foc_task.h"
+#include "ui/ui_knob.h"
 
 static const char *TAG = "app";
 
@@ -23,9 +24,11 @@ extern "C" void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_init());
     }
 
-    ESP_LOGI(TAG, "Smart Knob Panel — 按键测试版（GPIO14）");
+    ESP_LOGI(TAG, "Smart Knob Panel — 旋钮屏 UI 版");
 
     foc_task_start();
+    /* 屏幕 + LVGL：core 0 低优先级；FOC 独占 core 1 */
+    ui_knob_start();
     /* 主交互：GPIO14 短按切模式 / 长按急停；日志走串口 */
     button_ctrl_start();
 

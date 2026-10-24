@@ -289,6 +289,19 @@ void foc_set_haptic_mode(haptic_mode_t mode)
     ESP_LOGI(TAG, "haptic -> %s", haptic_mode_name(mode));
 }
 
+void foc_set_haptic_mode_pos(haptic_mode_t mode, int32_t position)
+{
+    taskENTER_CRITICAL(&s_lock);
+    haptic_set_mode(&s_haptic, mode, s_motor.shaft_angle);
+    const int32_t n = s_haptic.params.num_positions;
+    if (n > 0) {
+        position = position < 0 ? 0 : (position >= n ? n - 1 : position);
+    }
+    s_haptic.position = position;
+    s_haptic.origin = s_motor.shaft_angle - (float)position * s_haptic.params.width_rad;
+    taskEXIT_CRITICAL(&s_lock);
+}
+
 haptic_mode_t foc_get_haptic_mode(void)
 {
     return s_haptic.mode;
@@ -412,6 +425,28 @@ void foc_stop(void)
 bool foc_is_ready(void)
 {
     return s_foc_aligned;
+}
+
+void foc_get_haptic_snapshot(foc_haptic_snapshot_t *out)
+{
+    if (!out) {
+        return;
+    }
+    taskENTER_CRITICAL(&s_lock);
+    out->mode = s_haptic.mode;
+    out->position = s_haptic.position;
+    out->num_positions = s_haptic.params.num_positions;
+    out->value_norm = s_haptic.value_norm;
+    out->shaft_rad = s_motor.shaft_angle - s_haptic.origin;
+    taskEXIT_CRITICAL(&s_lock);
+}
+
+static uint32_t s_loop_cnt = 0; /* 仅 FOC 任务读写 */
+static volatile float s_loop_hz = 0.0f;
+
+float foc_get_loop_hz(void)
+{
+    return s_loop_hz;
 }
 
 bool foc_is_ok(void)
@@ -902,7 +937,15 @@ static void foc_loop_task(void *arg)
     (void)arg;
     motor_init();
 
+    int64_t hz_t0 = esp_timer_get_time();
+    uint32_t hz_c0 = s_loop_cnt;
     while (true) {
+        const int64_t tnow = esp_timer_get_time();
+        if (tnow - hz_t0 >= 1000000) {
+            s_loop_hz = (float)(s_loop_cnt - hz_c0) * 1e6f / (float)(tnow - hz_t0);
+            hz_t0 = tnow;
+            hz_c0 = s_loop_cnt;
+        }
         /* 停机/校准失败：只刷传感器；周期性再拉低 EN，防止被别的路径打开 */
         if (s_ctrl == FOC_CTRL_SENSOR || !s_foc_ok) {
             if (!s_diag && gpio_get_level(BOARD_DRIVER_ENABLE_GPIO) != 0) {
@@ -911,9 +954,29 @@ static void foc_loop_task(void *arg)
             }
             if (s_encoder.bus() != Mt6701Bus::None) {
                 s_encoder.update();
-                /* 让 shaft_angle 跟随，切入闭环时原点正确 */
-                s_motor.shaft_angle = s_motor.shaftAngle();
+                /* 让 shaft_angle 跟随，切入闭环时原点正确。
+                 * 校准失败时方向未知（=0 会让 shaftAngle 恒 0）→ 直接用编码器角度 */
+                s_motor.shaft_angle = (s_motor.sensor_direction == Direction::UNKNOWN)
+                                          ? s_encoder.getAngle()
+                                          : s_motor.shaftAngle();
+                /* 不出力，只更新格位/数值，供 UI 降级模式用编码器导航 */
+                taskENTER_CRITICAL(&s_lock);
+                (void)haptic_compute_current(&s_haptic, s_motor.shaft_angle, 0.0f);
+                /* 无力反馈时端点摸不到：越过端点就让原点跟着走，往回拧立即响应 */
+                const int32_t n = s_haptic.params.num_positions;
+                if (n > 0) {
+                    const float w = s_haptic.params.width_rad;
+                    const float err = s_motor.shaft_angle -
+                                      (s_haptic.origin + (float)s_haptic.position * w);
+                    if (s_haptic.position == 0 && err < -0.5f * w) {
+                        s_haptic.origin += err + 0.5f * w;
+                    } else if (s_haptic.position == n - 1 && err > 0.5f * w) {
+                        s_haptic.origin += err - 0.5f * w;
+                    }
+                }
+                taskEXIT_CRITICAL(&s_lock);
             }
+            s_loop_cnt++;
             s_i_est = 0.0f;
             s_uq = 0.0f;
             s_sleeping = false;
@@ -927,6 +990,7 @@ static void foc_loop_task(void *arg)
         for (int k = 0; k < BOARD_FOC_ITER_PER_TICK; k++) {
             control_step();
         }
+        s_loop_cnt += BOARD_FOC_ITER_PER_TICK;
         vTaskDelay(1);
     }
 }

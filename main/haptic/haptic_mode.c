@@ -71,6 +71,12 @@ static void params_for_mode(haptic_params_t *p, haptic_mode_t mode)
         p->num_positions = 21;
         p->detent_kp = 0.6f;
         break;
+    case HAPTIC_MENU:
+        p->width_rad = 30.0f * PI / 180.0f;
+        p->num_positions = 5;
+        p->detent_kp = 1.1f;
+        p->endstop_kp = 2.5f;
+        break;
     default:
         break;
     }
@@ -121,6 +127,8 @@ const char *haptic_mode_name(haptic_mode_t mode)
         return "dimmer";
     case HAPTIC_CURTAIN:
         return "curtain";
+    case HAPTIC_MENU:
+        return "menu";
     default:
         return "unknown";
     }
